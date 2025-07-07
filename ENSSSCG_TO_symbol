@@ -1,0 +1,93 @@
+# RNA-seq分析：将Ensembl ID转换为Gene Symbol 
+# 功能: 
+#   专门读取DESeq2分析产生的CSV结果文件，并为其添加Gene Symbol。
+#
+# 输入文件: 
+#   'DESeq2_DON_vs_CK_all_genes.csv' 
+#
+# 输出文件: 
+#   'DESeq2_results_with_gene_symbols.csv'
+#
+# 作者: Gemini (为用户整理)
+# 日期: 2025-07-07
+
+# --- 步骤 0: 准备工作 (安装和加载R包) ---
+
+# 检查并安装biomaRt包 (如果尚未安装)
+if (!requireNamespace("biomaRt", quietly = TRUE)) {
+  install.packages("biomaRt")
+}
+# 检查并安装tidyverse包 (它包含了dplyr和tibble)
+if (!requireNamespace("tidyverse", quietly = TRUE)) {
+  install.packages("tidyverse")
+}
+
+# 加载运行所需的包
+library(biomaRt)
+library(dplyr)
+library(tibble)
+
+
+# --- 步骤 1: 读取您的输入文件 ---
+
+# 定义输入文件名
+input_file <- "DESeq2_DON_vs_CK_all_genes.csv"
+
+# 检查文件是否存在
+if (!file.exists(input_file)) {
+  stop("错误: 输入文件 '", input_file, "' 不存在。请确保它和R脚本在同一个目录下。")
+}
+
+cat("正在读取输入文件:", input_file, "\n")
+# read.csv的 row.names = 1 参数会将CSV的第一列作为数据框的行名
+diff_exp_results <- read.csv(input_file, row.names = 1)
+
+cat("文件读取成功，预览数据前几行：\n")
+print(head(diff_exp_results))
+
+
+# --- 步骤 2: 连接Ensembl数据库并获取ID映射 ---
+
+cat("\n正在连接Ensembl BioMart服务器...\n")
+# 'sscrofa_gene_ensembl' 对应猪(Sus scrofa)的数据库
+ensembl <- useEnsembl(biomart = "genes", dataset = "sscrofa_gene_ensembl")
+cat("连接成功！\n")
+
+# 从已读取的数据中获取Ensembl ID列表
+ensembl_ids <- rownames(diff_exp_results)
+
+# 在线查询ID映射关系
+cat("正在从biomaRt在线查询ID，这可能需要一些时间...\n")
+gene_mapping <- getBM(attributes = c('ensembl_gene_id', 'external_gene_name'),
+                      filters = 'ensembl_gene_id',
+                      values = ensembl_ids,
+                      mart = ensembl)
+cat("查询完成！\n")
+
+
+# --- 步骤 3: 合并数据并生成最终结果 ---
+
+# 使用left_join合并差异分析结果和基因名
+final_results <- diff_exp_results %>%
+  rownames_to_column(var = "ensembl_id") %>%
+  left_join(gene_mapping, by = c("ensembl_id" = "ensembl_gene_id")) %>%
+  rename(symbol = external_gene_name) %>%
+  # 明确指定使用dplyr的select函数，防止函数名冲突
+  dplyr::select(ensembl_id, symbol, everything())
+
+
+# --- 步骤 4: 预览并保存最终结果 ---
+
+cat("\n【ID转换成功】最终结果预览：\n")
+print(head(final_results))
+
+# 定义输出文件名
+output_file <- "DESeq2_results_with_gene_symbols.csv"
+
+# 将带有Gene Symbol的完整结果保存到新的CSV文件
+write.csv(final_results, 
+          file = output_file, 
+          row.names = FALSE) # 设置为FALSE，因为ensembl_id已是单独一列
+
+cat("\n整理完毕！\n")
+cat("带有Gene Symbol的完整结果已保存到文件 '", output_file, "' 中。\n")
