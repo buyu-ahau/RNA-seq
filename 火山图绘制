@@ -1,0 +1,109 @@
+# 清理环境，确保从干净的状态开始 (可选)
+rm(list = ls()) 
+
+# 1. 加载必要的库
+library(readr)
+library(ggplot2)
+library(ggrepel)
+
+# 2. 读取您的数据文件
+new_filename <- "Con-vs-Mhp.DEseq2.before-filter.xls"
+data <- read_tsv(new_filename)
+
+
+# 3. 数据预处理
+data <- as.data.frame(data)
+rownames(data) <- data$GeneID
+data$log2FoldChange <- data$logFC
+data$pvalue <- data$Pvalue
+data <- data[!is.na(data$log2FoldChange) & !is.na(data$pvalue), ]
+
+
+# 预先处理无穷大的点
+data$neg_log10_pvalue <- -log10(data$pvalue)
+infinite_rows <- is.infinite(data$neg_log10_pvalue)
+plot_data <- data[!infinite_rows, ]
+
+
+# 4. 定义显著性阈值并拆分数据
+logfc_threshold <- 1 
+pvalue_threshold <- 0.05
+data_ns <- subset(plot_data, abs(log2FoldChange) <= logfc_threshold | pvalue >= pvalue_threshold)
+data_sig <- subset(plot_data, abs(log2FoldChange) > logfc_threshold & pvalue < pvalue_threshold)
+
+
+# --- 5. 为基因添加标签，并执行过滤 (更新版) ---
+
+# 步骤 5a: 找出 Top 20 显著基因
+top_genes <- head(data_sig[order(data_sig$pvalue), ], 20)
+
+# 步骤 5b: 为 Top 20 基因创建初始标签
+plot_data$label <- NA
+top_genes_indices <- which(rownames(plot_data) %in% rownames(top_genes))
+if("Gene_name" %in% colnames(plot_data)) {
+  for (i in top_genes_indices) {
+    if (!is.na(plot_data$Gene_name[i]) && plot_data$Gene_name[i] != "" && plot_data$Gene_name[i] != "-") {
+      plot_data$label[i] <- plot_data$Gene_name[i]
+    } else {
+      plot_data$label[i] <- plot_data$GeneID[i]
+    }
+  }
+} else {
+  for (i in top_genes_indices) {
+    plot_data$label[i] <- plot_data$GeneID[i]
+  }
+}
+
+# --- 步骤 5c: (这是修改的关键步骤) 检查并移除所有不需要的标签 ---
+# 在原有规则基础上，加入了 |^IGHV 和 |^IGHG
+patterns_to_remove <- "^novel\\.|^IGKV|^LOC|^IGHV|^IGHG" # <--- 修改这一行
+
+labels_to_remove_indices <- which(grepl(patterns_to_remove, plot_data$label))
+
+if(length(labels_to_remove_indices) > 0) {
+  cat("--- 过滤标签 ---\n")
+  cat("找到了", length(labels_to_remove_indices), "个匹配过滤模式的标签，将不在图中显示它们。\n")
+  print(plot_data$label[labels_to_remove_indices]) # 打印出将要被移除的标签
+  plot_data$label[labels_to_remove_indices] <- NA   # 将这些标签设置为空
+  cat("------------------\n\n")
+}
+
+# 6. 开始绘图 (与之前完全一致)
+p <- ggplot(plot_data, aes(x = log2FoldChange, y = neg_log10_pvalue)) +
+  geom_point(data = data_ns, color = "grey", size = 0.8, alpha = 0.6) +
+  geom_point(data = data_sig, aes(size = neg_log10_pvalue, color = neg_log10_pvalue), alpha = 0.8) +
+  geom_vline(xintercept = c(-logfc_threshold, logfc_threshold), linetype = "dashed", color = "#999999") +
+  geom_hline(yintercept = -log10(pvalue_threshold), linetype = "dashed", color = "#999999") +
+  scale_color_gradientn(
+    colors = c("#39489f", "#39bbec", "#f9ed36", "#f38466", "#b81f25"),
+    name = "-log10(p-value)"
+  ) +
+  scale_size_continuous(range = c(0.5, 3)) +
+  scale_y_continuous(expand = c(0, 0)) + 
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right",
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    plot.title = element_text(size = 16, hjust = 0.5)
+  ) +
+  guides(size = "none") +
+  geom_text_repel(
+    data = subset(plot_data, !is.na(label)),
+    aes(label = label),
+    na.rm = TRUE,
+    size = 3
+  ) +
+  xlab("Log2 Fold Change") +
+  ylab("-log10(P-VALUE)") +
+  ggtitle("Volcano Plot") +
+  coord_cartesian(
+    xlim = c(-15, 15),
+    ylim = c(0, 320)
+  )
+
+# 7. 显示并保存图片
+print(p)
+ggsave("final_volcano_plot_log10.png", plot = p, width = 10, height = 8, dpi = 600)
+ggsave("final_volcano_plot_log10.pdf", plot = p, width = 10, height = 8)
