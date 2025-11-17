@@ -112,3 +112,6 @@ p <- ggplot(plot_data, aes(x = log2FoldChange, y = neg_log10_pvalue)) +
 # --- 6. 显示并保存图片 ---
 print(p)
 # ggsave(...)
+
+
+

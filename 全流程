@@ -1,0 +1,349 @@
+#!/bin/bash
+
+###############################################################################
+# RNA-seq 通用自动化分析流程
+# 使用说明：只需修改下面的配置参数部分即可
+# Author: Copilot for buyu-ahau
+# Date: 2025-10-30
+###############################################################################
+
+set -e  # 遇到错误立即退出
+set -u  # 使用未定义变量时报错
+
+###############################################################################
+# ⚙️  配置参数区域 - 根据你的项目修改这里
+###############################################################################
+
+# 【必填】工作目录（结果保存位置）
+WORK_DIR="/disk192/users_dir/buyu/1.布宇/supplement/22"
+
+# 【必填】原始数据目录
+RAW_DATA_DIR="${WORK_DIR}/rawdata"
+
+# 【必填】参考基因组目录
+GENOME_DIR="/disk192/users_dir/buyu/2.参考基因组/1.human"
+
+# 【必填】参考基因组 FASTA 文件名
+GENOME_FASTA="${GENOME_DIR}/Homo_sapiens.GRCh38.dna.toplevel.fa"
+
+# 【必填】GTF 注释文件名
+GTF_FILE="${GENOME_DIR}/Homo_sapiens.GRCh38.114.gtf"
+
+# 【必填】样本列表（不含 .R1/.R2.raw.fastq.gz 后缀）
+# 格式：样本名需要与 fastq.gz 文件名前缀一致
+SAMPLES=(
+    "L1MKG2203750-Control1"
+    "L1MKG2203751-Control2"
+    "L1MKG2203752-Control3"
+    "L1MKG2203753-Control4"
+    "L1MKG2203754-Treat1"
+    "L1MKG2203755-Treat2"
+    "L1MKG2203756-Treat3"
+    "L1MKG2203757-Treat4"
+)
+
+# 【可选】线程数（根据服务器配置调整）
+THREADS=100
+FEATURECOUNTS_THREADS=64  # featureCounts 最大支持 64 线程
+
+# 【可选】STAR 索引参数
+SJDB_OVERHANG=149  # read length - 1 (如果是 150bp 双端测序)
+GENOME_SA_INDEX_NBASES=14  # 默认值，小基因组可以调小
+
+# 【可选】fastp 质控参数
+FASTP_QUALITY=20  # 质量阈值
+FASTP_LENGTH=36   # 最短 reads 长度
+
+###############################################################################
+# 以下代码无需修改
+###############################################################################
+
+# 开始时间
+START_TIME=$(date +%s)
+
+# 输出目录（自动创建）
+QC_RAW_DIR="${WORK_DIR}/01_fastqc_raw"
+CLEAN_DIR="${WORK_DIR}/02_fastp_clean"
+QC_CLEAN_DIR="${WORK_DIR}/03_fastqc_clean"
+STAR_INDEX_DIR="${WORK_DIR}/04_STAR_index"
+ALIGN_DIR="${WORK_DIR}/05_STAR_align"
+BAM_DIR="${WORK_DIR}/06_sorted_bam"
+COUNT_DIR="${WORK_DIR}/07_featureCounts"
+
+# 日志文件
+LOG_FILE="${WORK_DIR}/pipeline_$(date +%Y%m%d_%H%M%S).log"
+
+# 错误处理函数
+handle_error() {
+    echo ""
+    echo "❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌"
+    echo "❌  流程出错！已暂停执行"
+    echo "❌  错误步骤: $1"
+    echo "❌  错误时间: $(date)"
+    echo "❌  请检查日志文件: ${LOG_FILE}"
+    echo "❌  查看最后50行日志:"
+    echo "❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌"
+    echo ""
+    tail -n 50 ${LOG_FILE}
+    return 1
+}
+
+echo "================================================================="
+echo "RNA-seq 自动化分析流程开始"
+echo "开始时间: $(date)"
+echo "工作目录: ${WORK_DIR}"
+echo "线程数: ${THREADS} (featureCounts: ${FEATURECOUNTS_THREADS})"
+echo "样本数: ${#SAMPLES[@]}"
+echo "日志文件: ${LOG_FILE}"
+echo "================================================================="
+
+###############################################################################
+# Step 0: 创建输出目录
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 0: 创建输出目录" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+mkdir -p ${QC_RAW_DIR} ${CLEAN_DIR} ${QC_CLEAN_DIR} ${STAR_INDEX_DIR} ${ALIGN_DIR} ${BAM_DIR} ${COUNT_DIR} || handle_error "创建目录失败"
+
+echo "[$(date)] ✓ 目录创建成功" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 1: FastQC 原始数据质控
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 1: FastQC 原始数据质控" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+fastqc -t ${THREADS} -o ${QC_RAW_DIR} ${RAW_DATA_DIR}/*.fastq.gz >> ${LOG_FILE} 2>&1 || handle_error "FastQC 原始数据质控失败"
+
+echo "[$(date)] ✓ FastQC 原始数据质控完成" | tee -a ${LOG_FILE}
+echo "结果保存在: ${QC_RAW_DIR}" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 2: fastp 数据清洗
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 2: fastp 数据清洗" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+for SAMPLE in "${SAMPLES[@]}"; do
+    echo "[$(date)] 处理样本: ${SAMPLE}" | tee -a ${LOG_FILE}
+    
+    fastp \
+        -i ${RAW_DATA_DIR}/${SAMPLE}.R1.raw.fastq.gz \
+        -I ${RAW_DATA_DIR}/${SAMPLE}.R2.raw.fastq.gz \
+        -o ${CLEAN_DIR}/${SAMPLE}.R1.clean.fastq.gz \
+        -O ${CLEAN_DIR}/${SAMPLE}.R2.clean.fastq.gz \
+        -w ${THREADS} \
+        -h ${CLEAN_DIR}/${SAMPLE}.fastp.html \
+        -j ${CLEAN_DIR}/${SAMPLE}.fastp.json \
+        --detect_adapter_for_pe \
+        --cut_front \
+        --cut_tail \
+        --cut_window_size 4 \
+        --cut_mean_quality ${FASTP_QUALITY} \
+        --qualified_quality_phred ${FASTP_QUALITY} \
+        --unqualified_percent_limit 40 \
+        --n_base_limit 5 \
+        --length_required ${FASTP_LENGTH} \
+        >> ${LOG_FILE} 2>&1 || handle_error "fastp 清洗失败: ${SAMPLE}"
+    
+    echo "[$(date)] ✓ ${SAMPLE} 清洗完成" | tee -a ${LOG_FILE}
+done
+
+echo "[$(date)] ✓ 所有样本清洗完成，结果保存在: ${CLEAN_DIR}" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 3: FastQC 清洗后数据质控
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 3: FastQC 清洗后数据质控" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+fastqc -t ${THREADS} -o ${QC_CLEAN_DIR} ${CLEAN_DIR}/*.clean.fastq.gz >> ${LOG_FILE} 2>&1 || handle_error "FastQC 清洗后质控失败"
+
+echo "[$(date)] ✓ FastQC 清洗后质控完成" | tee -a ${LOG_FILE}
+echo "结果保存在: ${QC_CLEAN_DIR}" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 4: STAR 基因组索引构建
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 4: STAR 基因组索引构建" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+if [ ! -f "${STAR_INDEX_DIR}/SAindex" ]; then
+    echo "[$(date)] 开始构建 STAR 索引 (预计 30-60 分钟)..." | tee -a ${LOG_FILE}
+    
+    STAR --runMode genomeGenerate \
+        --runThreadN ${THREADS} \
+        --genomeDir ${STAR_INDEX_DIR} \
+        --genomeFastaFiles ${GENOME_FASTA} \
+        --sjdbGTFfile ${GTF_FILE} \
+        --sjdbOverhang ${SJDB_OVERHANG} \
+        --genomeSAindexNbases ${GENOME_SA_INDEX_NBASES} \
+        >> ${LOG_FILE} 2>&1 || handle_error "STAR 索引构建失败"
+    
+    echo "[$(date)] ✓ STAR 索引构建完成，保存在: ${STAR_INDEX_DIR}" | tee -a ${LOG_FILE}
+else
+    echo "[$(date)] STAR 索引已存在，跳过构建步骤" | tee -a ${LOG_FILE}
+fi
+
+###############################################################################
+# Step 5: STAR 序列比对
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 5: STAR 序列比对" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+for SAMPLE in "${SAMPLES[@]}"; do
+    echo "[$(date)] 比对样本: ${SAMPLE}" | tee -a ${LOG_FILE}
+    
+    STAR --runMode alignReads \
+        --runThreadN ${THREADS} \
+        --genomeDir ${STAR_INDEX_DIR} \
+        --readFilesIn ${CLEAN_DIR}/${SAMPLE}.R1.clean.fastq.gz ${CLEAN_DIR}/${SAMPLE}.R2.clean.fastq.gz \
+        --readFilesCommand zcat \
+        --outFileNamePrefix ${ALIGN_DIR}/${SAMPLE}_ \
+        --outSAMtype BAM Unsorted \
+        --outSAMunmapped Within \
+        --outSAMattributes Standard \
+        --outFilterType BySJout \
+        --outFilterMultimapNmax 20 \
+        --alignSJoverhangMin 8 \
+        --alignSJDBoverhangMin 1 \
+        --outFilterMismatchNmax 999 \
+        --outFilterMismatchNoverReadLmax 0.04 \
+        --alignIntronMin 20 \
+        --alignIntronMax 1000000 \
+        --alignMatesGapMax 1000000 \
+        >> ${LOG_FILE} 2>&1 || handle_error "STAR 比对失败: ${SAMPLE}"
+    
+    echo "[$(date)] ✓ ${SAMPLE} 比对完成" | tee -a ${LOG_FILE}
+done
+
+echo "[$(date)] ✓ 所有样本比对完成，结果保存在: ${ALIGN_DIR}" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 6: BAM 文件排序和索引
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 6: BAM 文件排序和索引" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+for SAMPLE in "${SAMPLES[@]}"; do
+    echo "[$(date)] 处理 BAM 文件: ${SAMPLE}" | tee -a ${LOG_FILE}
+    
+    # 排序
+    samtools sort -@ ${THREADS} -o ${BAM_DIR}/${SAMPLE}.sorted.bam ${ALIGN_DIR}/${SAMPLE}_Aligned.out.bam >> ${LOG_FILE} 2>&1 || handle_error "BAM 排序失败: ${SAMPLE}"
+    
+    echo "[$(date)] ✓ ${SAMPLE} BAM 排序完成" | tee -a ${LOG_FILE}
+    
+    # 索引
+    samtools index -@ ${THREADS} ${BAM_DIR}/${SAMPLE}.sorted.bam >> ${LOG_FILE} 2>&1 || handle_error "BAM 索引失败: ${SAMPLE}"
+    
+    echo "[$(date)] ✓ ${SAMPLE} BAM 索引完成" | tee -a ${LOG_FILE}
+done
+
+echo "[$(date)] ✓ 所有 BAM 文件处理完成，结果保存在: ${BAM_DIR}" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 7: featureCounts 基因定量
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 7: featureCounts 基因定量" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+BAM_FILES=$(ls ${BAM_DIR}/*.sorted.bam | tr '\n' ' ')
+
+featureCounts \
+    -T ${FEATURECOUNTS_THREADS} \
+    -p \
+    -t exon \
+    -g gene_id \
+    -a ${GTF_FILE} \
+    -o ${COUNT_DIR}/gene_counts.txt \
+    ${BAM_FILES} \
+    >> ${LOG_FILE} 2>&1 || handle_error "featureCounts 基因定量失败"
+
+echo "[$(date)] ✓ featureCounts 完成，表达矩阵保存在: ${COUNT_DIR}/gene_counts.txt" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 8: MultiQC 汇总报告
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 8: MultiQC 汇总报告" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+multiqc ${WORK_DIR} -o ${WORK_DIR}/multiqc_report -n multiqc_report --force >> ${LOG_FILE} 2>&1 || handle_error "MultiQC 报告生成失败"
+
+echo "[$(date)] ✓ MultiQC 报告保存在: ${WORK_DIR}/multiqc_report/multiqc_report.html" | tee -a ${LOG_FILE}
+
+###############################################################################
+# Step 9: 清理临时文件
+###############################################################################
+
+echo ""
+echo "==================================================================" | tee -a ${LOG_FILE}
+echo "Step 9: 清理中间文件" | tee -a ${LOG_FILE}
+echo "==================================================================" | tee -a ${LOG_FILE}
+
+echo "[$(date)] 删除 STAR 未排序的 BAM 文件以节省空间..." | tee -a ${LOG_FILE}
+rm -f ${ALIGN_DIR}/*_Aligned.out.bam
+
+echo "[$(date)] ✓ 临时文件清理完成" | tee -a ${LOG_FILE}
+
+###############################################################################
+# 流程完成总结
+###############################################################################
+
+END_TIME=$(date +%s)
+ELAPSED=$((END_TIME - START_TIME))
+HOURS=$((ELAPSED / 3600))
+MINUTES=$(((ELAPSED % 3600) / 60))
+SECONDS=$((ELAPSED % 60))
+
+echo ""
+echo "================================================================="
+echo "                    🎉 流程全部完成 🎉"
+echo "================================================================="
+echo ""
+echo "✓ 总耗时: ${HOURS}小时 ${MINUTES}分钟 ${SECONDS}秒"
+echo ""
+echo "输出目录结构:"
+echo "  01_fastqc_raw/      原始数据质控报告"
+echo "  02_fastp_clean/     清洗后的数据和报告"
+echo "  03_fastqc_clean/    清洗后质控报告"
+echo "  04_STAR_index/      STAR 基因组索引"
+echo "  05_STAR_align/      STAR 比对结果"
+echo "  06_sorted_bam/      排序后的 BAM 文件"
+echo "  07_featureCounts/   基因表达矩阵 ★"
+echo "  multiqc_report/     质控汇总报告 ★"
+echo ""
+echo "关键结果文件:"
+echo "  - 基因表达矩阵: ${COUNT_DIR}/gene_counts.txt"
+echo "  - MultiQC 报告: ${WORK_DIR}/multiqc_report/multiqc_report.html"
+echo "  - 完整日志: ${LOG_FILE}"
+echo ""
+echo "================================================================="
+echo "可以进行下游差异分析了！"
+echo "================================================================="
