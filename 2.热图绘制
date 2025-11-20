@@ -1,0 +1,110 @@
+# ==============================================================================
+# 模块: 绘制 Nature 风格热图 (ComplexHeatmap 最终版)
+# ==============================================================================
+# 依赖环境: res_df, mat_vst, gene_info, colData
+# 输出: PDF 和 PNG 文件
+
+library(ComplexHeatmap)
+library(circlize)
+
+# --- 1. 数据准备 (Data Preparation) ---
+
+# A. 定义要高亮标记的目标基因
+target_genes <- c("Col1a1", "Tgfb1", "Acta2", "Lox", "Ccn1", "Cyr61", "Ccn2", "Ctgf", "Ccl2")
+
+# B. 筛选绘图基因列表 
+# 策略: 取 (显著差异基因 padj<0.05 & |Log2FC|>1) 和 (目标 Marker 基因) 的并集
+bg_genes <- subset(res_df, padj < 0.05 & abs(log2FoldChange) > 1)$Ensembl_ID
+target_ids <- gene_info$Ensembl_ID[gene_info$Symbol_ID %in% target_genes]
+plot_ids <- unique(c(bg_genes, target_ids))
+plot_ids <- plot_ids[!is.na(plot_ids)] # 去除可能的 NA
+
+# C. 提取矩阵并进行 Z-score 标准化
+mat_plot <- mat_vst[plot_ids, ]
+mat_scaled <- t(scale(t(mat_plot))) # 行标准化
+
+# --- 2. 构建注释 (Annotations) ---
+
+# A. 准备右侧引导线标签 (anno_mark)
+# 获取当前矩阵对应的 Symbol
+current_symbols <- gene_info$Symbol_ID[match(rownames(mat_scaled), gene_info$Ensembl_ID)]
+# 找到目标基因在矩阵中的索引位置
+gene_indices <- which(current_symbols %in% target_genes)
+gene_labels <- current_symbols[gene_indices]
+
+right_ha = rowAnnotation(
+    link = anno_mark(
+        at = gene_indices, 
+        labels = gene_labels, 
+        labels_gp = gpar(fontsize = 12, fontface = "bold.italic", fontfamily = "sans"), 
+        padding = unit(1, "mm"),
+        link_width = unit(4, "mm")
+    )
+)
+
+# B. 准备顶部颜色条
+column_ha = HeatmapAnnotation(
+    Group = colData$condition,
+    col = list(Group = c("BLM_Saline" = "#E64B35", "BLM_BA" = "#4DBBD5")),
+    show_annotation_name = FALSE,
+    simple_anno_size = unit(0.5, "cm")
+)
+
+# C. 设置热图颜色映射 (蓝-白-红)
+col_fun = colorRamp2(c(-2, 0, 2), c("#313695", "white", "#A50026"))
+
+# --- 3. 绘图与保存 (Plotting & Saving) ---
+
+# 定义保存路径
+save_path <- file.path(work_dir, "02_Differential_Analysis")
+pdf_file <- file.path(save_path, "Heatmap_Nature_Final.pdf")
+png_file <- file.path(save_path, "Heatmap_Nature_Final.png")
+
+# 定义绘图主函数 (方便重复调用)
+draw_heatmap <- function() {
+  Heatmap(mat_scaled,
+          name = "Z-score",
+          col = col_fun,
+          
+          # 聚类与分割
+          cluster_rows = TRUE,
+          show_row_dend = FALSE,       # 隐藏左侧聚类树
+          row_km = 2,                  # 按 K-means 分两组
+          row_gap = unit(2, "mm"),     # 组间缝隙
+          row_title = NULL,            # 隐藏左侧组编号 (1, 2)
+          
+          # 样本轴
+          cluster_columns = FALSE,     # 样本不聚类
+          show_column_names = FALSE,   # 隐藏底部样本名
+          
+          # 标签
+          show_row_names = FALSE,      # 不显示所有基因名
+          
+          # 注释挂载
+          top_annotation = column_ha,
+          right_annotation = right_ha,
+          
+          # 样式微调
+          border = FALSE,
+          heatmap_legend_param = list(
+              title = "Z-score", 
+              title_gp = gpar(fontsize = 10, fontface = "bold"),
+              labels_gp = gpar(fontsize = 10),
+              direction = "vertical"
+          )
+  )
+}
+
+# 保存 PDF
+pdf(pdf_file, width = 6, height = 8)
+draw_heatmap()
+dev.off()
+
+# 保存 PNG (300 dpi)
+png(png_file, width = 6, height = 8, units = "in", res = 300)
+draw_heatmap()
+dev.off()
+
+cat(">>> 热图绘制完成！\n")
+cat(paste0("    PDF: ", pdf_file, "\n"))
+cat(paste0("    PNG: ", png_file, "\n"))

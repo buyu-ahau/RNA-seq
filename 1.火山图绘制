@@ -1,0 +1,242 @@
+# -------------------------------------------------------------------------
+# 最终火山图绘制脚本 (V6 - 正确标签逻辑 + 双色谱渐变)
+# -------------------------------------------------------------------------
+
+# --- 1. 环境准备 ---
+rm(list = ls()) 
+library(readr)
+library(ggplot2)
+library(ggrepel)
+library(ggnewscale) # 用于实现双色谱
+
+# --- 2. 读取与预处理数据 ---
+new_filename <- "Con-vs-Mhp.DEseq2.before-filter.xls"
+data <- read_tsv(new_filename)
+
+data <- as.data.frame(data)
+rownames(data) <- data$GeneID
+data$log2FoldChange <- data$logFC
+data$pvalue <- data$Pvalue
+data <- data[!is.na(data$log2FoldChange) & !is.na(data$pvalue), ]
+
+data$neg_log10_pvalue <- -log10(data$pvalue)
+infinite_rows <- is.infinite(data$neg_log10_pvalue)
+plot_data <- data[!infinite_rows, ]
+
+# --- 3. 定义阈值并拆分数据 ---
+logfc_threshold <- 1 
+pvalue_threshold <- 0.05
+
+data_ns <- subset(plot_data, abs(log2FoldChange) <= logfc_threshold | pvalue >= pvalue_threshold)
+data_sig <- subset(plot_data, abs(log2FoldChange) > logfc_threshold & pvalue < pvalue_threshold)
+
+data_up <- subset(data_sig, log2FoldChange > 0)
+data_down <- subset(data_sig, log2FoldChange < 0)
+
+# --- 4. 基因标签处理 (使用您验证过的正确逻辑) ---
+# 找出 Top 20 显著基因
+top_genes <- head(data_sig[order(data_sig$pvalue), ], 20)
+
+# 创建初始标签列
+plot_data$label <- NA
+top_genes_indices <- which(rownames(plot_data) %in% rownames(top_genes))
+
+# 核心逻辑：优先用 Gene_name, 如果为空则用 GeneID 作为备用
+if("Gene_name" %in% colnames(plot_data)) {
+  for (i in top_genes_indices) {
+    if (!is.na(plot_data$Gene_name[i]) && plot_data$Gene_name[i] != "" && plot_data$Gene_name[i] != "-") {
+      plot_data$label[i] <- plot_data$Gene_name[i]
+    } else {
+      # 使用 GeneID 作为备用方案
+      plot_data$label[i] <- plot_data$GeneID[i] 
+    }
+  }
+} else {
+  # 如果没有 Gene_name 列，直接用 GeneID
+  for (i in top_genes_indices) {
+    plot_data$label[i] <- plot_data$GeneID[i]
+  }
+}
+
+# 过滤掉不想显示的特定标签 (这部分逻辑保持不变)
+patterns_to_remove <- "^novel\\.|^IGKV|^LOC|^IGHV|^IGHG"
+labels_to_remove_indices <- which(grepl(patterns_to_remove, plot_data$label))
+if(length(labels_to_remove_indices) > 0) {
+  plot_data$label[labels_to_remove_indices] <- NA
+}
+
+# --- 5. 开始绘图 ---
+p <- ggplot(plot_data, aes(x = log2FoldChange, y = neg_log10_pvalue)) +
+  
+  # 第1层: 不显著的点 (灰色)
+  geom_point(data = data_ns, color = "grey", size = 1.2, alpha = 0.6, stroke = 0) +
+  
+  # 第2层: 下调的显著点 (蓝色系渐变)
+  geom_point(data = data_down, aes(color = neg_log10_pvalue, size = neg_log10_pvalue), alpha = 0.8, stroke = 0) +
+  scale_color_gradient(low = "#b5dbe6", high = "#333aab", name = "-log10(p-value) Down") +
+  
+  # 开始一个新的颜色标度
+  new_scale_color() +
+  
+  # 第3层: 上调的显著点 (红色系渐变)
+  geom_point(data = data_up, aes(color = neg_log10_pvalue, size = neg_log10_pvalue), alpha = 0.8, stroke = 0) +
+  scale_color_gradient(low = "#fe8264", high = "#a73336", name = "-log10(p-value) Up") +
+
+  # --- 其他设置 ---
+  geom_vline(xintercept = c(-logfc_threshold, logfc_threshold), linetype = "dashed", color = "#999999") +
+  geom_hline(yintercept = -log10(pvalue_threshold), linetype = "dashed", color = "#999999") +
+  scale_size_continuous(range = c(1, 4)) +
+  scale_y_continuous(expand = c(0, 0)) + 
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right",
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    plot.title = element_text(size = 16, hjust = 0.5)
+  ) +
+  guides(size = "none") + 
+  geom_text_repel(
+    data = subset(plot_data, !is.na(label)),
+    aes(label = label),
+    na.rm = TRUE,
+    size = 3,
+    color = "black", box.padding = 0.5, point.padding = 0.2, segment.color = 'grey50',
+    segment.size = 0.4, force = 10, max.overlaps = Inf, min.segment.length = 0, seed = 123
+  ) +
+  xlab("Log2 Fold Change") +
+  ylab("-log10(P-VALUE)") +
+  ggtitle("Volcano Plot") +
+  coord_cartesian(xlim = c(-12, 12), ylim = c(0, 320))
+
+# --- 6. 显示并保存图片 ---
+print(p)
+# ggsave(...)
+
+
+
+
+#####2####
+library(ggplot2)
+library(ggnewscale) # 确保加载了这个包
+
+# === 1. 创建结果存放目录 ===
+base_dir <- "G:/XY/34号/"
+dir_A <- paste0(base_dir, "A_vs_CON/")
+dir_B <- paste0(base_dir, "B_vs_CON/")
+
+if(!dir.exists(dir_A)) dir.create(dir_A)
+if(!dir.exists(dir_B)) dir.create(dir_B)
+
+print("=== 文件夹创建完成 ===")
+print(paste("A组目录:", dir_A))
+print(paste("B组目录:", dir_B))
+
+# === 2. 定义通用的火山图绘制函数 ===
+# 这样可以保证两张图风格完全一致，代码也简洁
+draw_volcano_plot <- function(deg_data, comparison_name, output_dir) {
+  
+  # --- 数据准备 ---
+  plot_data <- deg_data
+  plot_data$log2FoldChange <- plot_data$logFC
+  plot_data$pvalue <- plot_data$P.Value
+  plot_data$neg_log10_pvalue <- -log10(plot_data$pvalue)
+  
+  # 去除无效值
+  plot_data <- plot_data[!is.na(plot_data$log2FoldChange) & !is.na(plot_data$pvalue), ]
+  
+  # --- 阈值设定 ---
+  logfc_threshold <- 0.58
+  pvalue_threshold <- 0.05
+  
+  # --- 数据拆分 ---
+  # 不显著
+  data_ns <- subset(plot_data, abs(log2FoldChange) <= logfc_threshold | pvalue >= pvalue_threshold)
+  # 显著
+  data_sig <- subset(plot_data, abs(log2FoldChange) > logfc_threshold & pvalue < pvalue_threshold)
+  # 上下调
+  data_up <- subset(data_sig, log2FoldChange > 0)
+  data_down <- subset(data_sig, log2FoldChange < 0)
+  
+  # --- 统计数量 ---
+  n_up <- nrow(data_up)
+  n_down <- nrow(data_down)
+  
+  # --- 计算坐标轴范围 (自动适配) ---
+  max_x <- max(abs(plot_data$log2FoldChange), na.rm = TRUE) * 1.1
+  max_x <- max(max_x, 1.5) # 保证最小宽度
+  max_y <- max(plot_data$neg_log10_pvalue, na.rm = TRUE) * 1.1
+  
+  # --- 绘图 ---
+  p <- ggplot(plot_data, aes(x = log2FoldChange, y = neg_log10_pvalue)) +
+    
+    # 1. 不显著点
+    geom_point(data = data_ns, color = "grey85", size = 1, alpha = 0.5) +
+    
+    # 2. 下调点 (蓝色渐变)
+    geom_point(data = data_down, aes(color = neg_log10_pvalue, size = neg_log10_pvalue), alpha = 0.8) +
+    scale_color_gradient(low = "#b5dbe6", high = "#333aab", name = "-log10(P) Down") +
+    scale_size_continuous(range = c(1.5, 4), guide = "none") + 
+    
+    # 3. 新颜色标度
+    new_scale_color() +
+    
+    # 4. 上调点 (红色渐变)
+    geom_point(data = data_up, aes(color = neg_log10_pvalue, size = neg_log10_pvalue), alpha = 0.8) +
+    scale_color_gradient(low = "#fe8264", high = "#a73336", name = "-log10(P) Up") +
+    
+    # 5. 辅助线
+    geom_vline(xintercept = c(-logfc_threshold, logfc_threshold), linetype = "dashed", color = "grey50", size = 0.5) +
+    geom_hline(yintercept = -log10(pvalue_threshold), linetype = "dashed", color = "grey50", size = 0.5) +
+    
+    # 6. 数量标注 (Up 右上, Down 左上)
+    annotate("text", x = -max_x * 0.8, y = max_y * 0.95, 
+             label = paste0("Down: ", n_down), 
+             color = "#333aab", size = 5, fontface = "bold", hjust = 0) +
+    annotate("text", x = max_x * 0.8, y = max_y * 0.95, 
+             label = paste0("Up: ", n_up), 
+             color = "#a73336", size = 5, fontface = "bold", hjust = 1) +
+    
+    # 7. 主题与标签
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      legend.position = "right",
+      axis.text = element_text(size = 12, color = "black"),
+      axis.title = element_text(size = 14, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.line = element_line(size = 0.8)
+    ) +
+    xlab("Log2 Fold Change") +
+    ylab("-log10 (P-value)") +
+    ggtitle(paste0("Volcano Plot: ", comparison_name)) +
+    coord_cartesian(xlim = c(-max_x, max_x), ylim = c(0, max_y))
+  
+  # --- 保存文件 ---
+  # 构建文件名
+  file_prefix <- paste0(output_dir, "Volcano_", gsub(" ", "", comparison_name))
+  
+  ggsave(paste0(file_prefix, ".png"), p, width = 7, height = 6, dpi = 300)
+  ggsave(paste0(file_prefix, ".pdf"), p, width = 7, height = 6)
+  
+  print(paste("图片已保存至:", output_dir))
+  return(p) # 返回图片对象以便查看
+}
+
+# === 3. 执行保存和绘图 ===
+
+# --- 处理 A vs CON ---
+print(">>> 正在处理 A vs CON ...")
+# 保存表格
+write.csv(res_A_new, paste0(dir_A, "DEG_A_vs_CON_Result.csv"))
+# 绘制火山图
+p1 <- draw_volcano_plot(res_A_new, "A vs CON", dir_A)
+
+# --- 处理 B vs CON ---
+print(">>> 正在处理 B vs CON ...")
+# 保存表格
+write.csv(res_B_new, paste0(dir_B, "DEG_B_vs_CON_Result.csv"))
+# 绘制火山图
+p2 <- draw_volcano_plot(res_B_new, "B vs CON", dir_B)
+
+print("=== 全部完成！请检查文件夹 ===")
