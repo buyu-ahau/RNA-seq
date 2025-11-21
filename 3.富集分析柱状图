@@ -1,0 +1,121 @@
+library(ggplot2)
+library(dplyr)
+library(stringr)
+
+# === 1. 准备工作 ===
+root_dir <- "G:/XY/34号"
+output_dir <- file.path(root_dir, "Nature_Enrichment_Plots")
+if(!dir.exists(output_dir)) dir.create(output_dir)
+
+# === 2. 定义关键词 ===
+target_pattern <- regex("gluc|glyco|carbohydrate|lipid|fatty|cholesterol|sterol|inflam|immun|defense|cytokine|response to virus", ignore_case = TRUE)
+
+# === 3. 定义横向柱状图函数 (黑色字体版) ===
+plot_targeted_bar <- function(group_name, subset_name, title_text) {
+  
+  # --- A. 寻找文件 ---
+  target_path <- file.path(root_dir, group_name, "gokegg", subset_name)
+  files <- list.files(target_path, pattern = "out\\.P\\.xls$", recursive = TRUE, full.names = TRUE)
+  
+  if(length(files) == 0) {
+    print(paste0(">>> 跳过: 未找到文件 ", group_name, " ", subset_name))
+    return()
+  }
+  
+  print(paste0("正在处理文件: ", files[1]))
+  
+  # --- B. 读取数据 ---
+  data <- read.delim(files[1], stringsAsFactors = FALSE, check.names = FALSE)
+  cols <- colnames(data)
+  
+  # 打印列名 (调试用)
+  print(paste("检测到的列名:", paste(cols, collapse=", ")))
+  
+  # --- C. 智能匹配列名 ---
+  p_col <- grep("Pvalue|pvalue|P_value|FDR|padj|qvalue", cols, ignore.case = TRUE, value = TRUE)[1]
+  term_col <- grep("Term|Description|GO_term|Pathway", cols, ignore.case = TRUE, value = TRUE)[1]
+  
+  if (is.na(p_col) || is.na(term_col)) {
+    print("!!! 错误: 关键列名 (P值/Term) 识别失败，跳过绘图 !!!")
+    return()
+  }
+  
+  # --- D. 筛选目标通路 ---
+  plot_data <- data %>% 
+    arrange(!!sym(p_col)) %>% 
+    head(50) %>% 
+    filter(str_detect(!!sym(term_col), target_pattern))
+  
+  if(nrow(plot_data) == 0) {
+    print(">>> 提示: 未发现目标关键词通路，不绘图。")
+    return()
+  }
+  
+  print(paste0(">>> 成功筛选到 ", nrow(plot_data), " 个目标通路。"))
+  
+  # --- E. 数据预处理 ---
+  plot_data$X_Value <- -log10(plot_data[[p_col]])
+  
+  # 处理 Term 名称换行
+  plot_data$Term_Wrap <- stringr::str_wrap(plot_data[[term_col]], width = 45)
+  
+  # 排序
+  plot_data$Term_Factor <- reorder(plot_data$Term_Wrap, plot_data$X_Value)
+  
+  # --- F. 绘图 (黑色字体) ---
+  p <- ggplot(plot_data, aes(x = X_Value, y = Term_Factor)) +
+    
+    # 画柱子 (纯黑)
+    geom_col(fill = "black", width = 0.7) +
+    
+    # 添加 P=0.05 虚线
+    geom_vline(xintercept = -log10(0.05), linetype = "dashed", color = "grey50", size = 1) +
+    annotate("text", x = -log10(0.05) + 0.1, y = nrow(plot_data) + 0.5, 
+             label = "P=0.05", color = "grey40", fontface = "italic", hjust = 0) +
+    
+    # 主题设置
+    theme_classic() +
+    labs(
+      title = title_text,
+      x = expression(-log[10](italic(P)-value)), 
+      y = NULL
+    ) +
+    
+    theme(
+      # 文字风格
+      text = element_text(family = "sans", size = 12),
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+      
+      # Y轴文字: 改回黑色 (Black)
+      axis.text.y = element_text(color = "black", size = 12), 
+      
+      axis.text.x = element_text(color = "black", size = 11),
+      axis.line = element_line(linewidth = 0.8, color = "black"),
+      axis.ticks.y = element_blank()
+    ) +
+    
+    # 调整坐标轴范围
+    scale_x_continuous(expand = c(0, 0), limits = c(0, max(plot_data$X_Value) * 1.1)) 
+  
+  # --- G. 保存 ---
+  # 建议使用 PDF 格式导入 Illustrator 编辑
+  file_prefix <- paste0(output_dir, "/BarPlot_Black_", group_name, "_", subset_name)
+  ggsave(paste0(file_prefix, ".png"), p, width = 7, height = 5, dpi = 300)
+  ggsave(paste0(file_prefix, ".pdf"), p, width = 7, height = 5)
+  
+  print(paste0(">>> 图片已保存: ", basename(file_prefix), ".pdf"))
+}
+
+# === 4. 执行绘图 ===
+print("--- 开始绘制横向柱状图 (黑色字体版) ---")
+
+# A vs CON (Up)
+plot_targeted_bar("A_vs_CON", "up", "A vs CON: Lipid Metabolism")
+
+# B vs CON (Up)
+plot_targeted_bar("B_vs_CON", "up", "B vs CON: Lipid Metabolism")
+
+# B vs CON (Down)
+plot_targeted_bar("B_vs_CON", "down", "B vs CON: Immune Response")
+
+print("--- 全部完成 ---")
