@@ -1,0 +1,204 @@
+#!/bin/bash
+# 脚本功能：使用 fastp 进行数据清洗和剪切
+# 线程设置：使用 16 线程 (fastp 建议值)，在 64 线程服务器上运行毫无压力
+# 作者：Gemini
+# 时间：2025-12-01
+
+# 1. 定义路径变量
+# 工作目录
+WORK_DIR="/disk192/users_dir/buyu/1.布宇/supplement/41"
+# 原始数据目录
+RAW_DIR="${WORK_DIR}/rawdata"
+# 清洗后数据输出目录 (会自动创建)
+CLEAN_DIR="${WORK_DIR}/cleandata"
+
+# 创建输出目录
+if [ ! -d "${CLEAN_DIR}" ]; then
+    mkdir -p "${CLEAN_DIR}"
+    echo "创建输出目录: ${CLEAN_DIR}"
+fi
+
+echo "========== 开始 fastp 数据清洗 =========="
+
+# 2. 遍历 R1 文件进行处理
+for r1_file in ${RAW_DIR}/*R1.raw.fastq.gz; do
+    
+    # 获取文件名（不带路径）
+    r1_name=$(basename "$r1_file")
+    
+    # 提取样本前缀 (例如: L1EGK2301878--T_1)
+    # 去掉后缀 .R1.raw.fastq.gz
+    sample_name=${r1_name%%.R1.raw.fastq.gz}
+    
+    # 定义 R2 文件路径
+    r2_file=${r1_file/R1.raw.fastq.gz/R2.raw.fastq.gz}
+    
+    # 定义输出文件路径
+    out_r1="${CLEAN_DIR}/${sample_name}.clean.R1.fastq.gz"
+    out_r2="${CLEAN_DIR}/${sample_name}.clean.R2.fastq.gz"
+    
+    # fastp 报告文件 (虽然不跑FastQC，但fastp自带的报告可以留底查看过滤比例)
+    html_report="${CLEAN_DIR}/${sample_name}.fastp.html"
+    json_report="${CLEAN_DIR}/${sample_name}.fastp.json"
+
+    echo "正在处理样本: ${sample_name}"
+    
+    # 运行 fastp
+    # -w 16: 使用16个线程
+    # --detect_adapter_for_pe: 自动检测接头
+    fastp -i "${r1_file}" -I "${r2_file}" \
+          -o "${out_r1}" -O "${out_r2}" \
+          -w 16 \
+          --detect_adapter_for_pe \
+          -h "${html_report}" -j "${json_report}"
+          
+    echo "样本 ${sample_name} 处理完成。"
+    echo "--------------------------------------"
+
+done
+
+echo "========== 所有样本清洗完成 =========="
+echo "清洗后的数据保存在: ${CLEAN_DIR}"
+
+
+
+#!/bin/bash
+# 脚本功能：STAR 比对 (修正版 - 解决打开文件数限制问题)
+# 作者：Gemini
+# 时间：2025-12-01
+
+# ================= 重要修正 =================
+# 尝试将最大打开文件数限制提高
+# 如果你的账户没有权限设置到 65535，脚本会尝试设置到 4096，通常足够了
+ulimit -n 65535 2>/dev/null || ulimit -n 4096
+echo "当前最大打开文件数限制 (ulimit -n): $(ulimit -n)"
+# ===========================================
+
+# 1. 定义路径
+WORK_DIR="/disk192/users_dir/buyu/1.布宇/supplement/41"
+CLEAN_DIR="${WORK_DIR}/cleandata"
+ALIGN_DIR="${WORK_DIR}/alignment"
+INDEX_DIR="/disk192/users_dir/buyu/2.参考基因组/1.human/STAR_index_GRCh38_114"
+
+# 创建输出目录
+if [ ! -d "${ALIGN_DIR}" ]; then
+    mkdir -p "${ALIGN_DIR}"
+fi
+
+echo "========== 开始 STAR 比对 (Fix Version) =========="
+
+# 2. 遍历 clean data 进行比对
+for r1_file in ${CLEAN_DIR}/*clean.R1.fastq.gz; do
+    
+    # 获取样本名
+    r1_name=$(basename "$r1_file")
+    sample_name=${r1_name%%.clean.R1.fastq.gz}
+    r2_file=${r1_file/R1.fastq.gz/R2.fastq.gz}
+    out_prefix="${ALIGN_DIR}/${sample_name}."
+
+    # 检查是否已经成功运行过（避免重复跑已成功的样本）
+    final_bam="${out_prefix}Aligned.sortedByCoord.out.bam"
+    if [ -f "$final_bam" ] && [ -f "${final_bam}.bai" ]; then
+        echo "[跳过] 样本 ${sample_name} 已存在结果文件。"
+        continue
+    fi
+
+    # 清理之前可能失败残留的临时目录
+    if [ -d "${out_prefix}_STARtmp" ]; then
+        rm -rf "${out_prefix}_STARtmp"
+    fi
+
+    echo "正在比对样本: ${sample_name}"
+    
+    # 运行 STAR
+    # 修改点：将 outBAMsortingThreadN 从 10 降为 6，减少文件句柄压力
+    STAR --runMode alignReads \
+         --runThreadN 32 \
+         --genomeDir "${INDEX_DIR}" \
+         --readFilesIn "${r1_file}" "${r2_file}" \
+         --readFilesCommand zcat \
+         --outFileNamePrefix "${out_prefix}" \
+         --outSAMtype BAM SortedByCoordinate \
+         --outBAMsortingThreadN 6 \
+         --limitBAMsortRAM 30000000000
+
+    # 检查 STAR 是否成功生成了 BAM 文件
+    if [ -f "${final_bam}" ]; then
+        echo "STAR 比对完成，开始构建索引..."
+        samtools index -@ 16 "${final_bam}"
+        echo "样本 ${sample_name} 处理完毕。"
+    else
+        echo "[错误] 样本 ${sample_name} 比对失败，未生成 BAM 文件。"
+    fi
+    echo "--------------------------------------"
+
+done
+
+echo "========== 所有样本处理结束 =========="
+#!/bin/bash
+# 脚本功能：使用 featureCounts 进行定量，并提取 Ensembl ID 和 Gene Symbol
+# 线程设置：32 线程
+# 作者：Gemini
+# 时间：2025-12-01
+
+# 1. 定义路径
+WORK_DIR="/disk192/users_dir/buyu/1.布宇/supplement/41"
+ALIGN_DIR="${WORK_DIR}/alignment"
+# 定量结果输出目录
+QUANT_DIR="${WORK_DIR}/quantification"
+# 参考基因组 GTF 文件
+GTF_FILE="/disk192/users_dir/buyu/2.参考基因组/1.human/Homo_sapiens.GRCh38.114.gtf"
+
+# 创建输出目录
+if [ ! -d "${QUANT_DIR}" ]; then
+    mkdir -p "${QUANT_DIR}"
+fi
+
+echo "========== 开始 featureCounts 定量 =========="
+
+# 定义输出文件路径
+OUTPUT_FILE="${QUANT_DIR}/all_counts.txt"
+
+# 2. 运行 featureCounts
+# -T 32: 使用32个线程
+# -p: 针对双端测序数据 (Paired-end)
+# -t exon: 统计 feature 类型为 exon
+# -g gene_id: 按照 gene_id (Ensembl ID) 进行归类
+# --extraAttributes gene_name: 额外提取 gene_name (Gene Symbol) 列
+# -a: 指定 GTF 注释文件
+# -o: 输出文件
+featureCounts -T 32 \
+              -p \
+              -t exon \
+              -g gene_id \
+              --extraAttributes gene_name \
+              -a "${GTF_FILE}" \
+              -o "${OUTPUT_FILE}" \
+              "${ALIGN_DIR}"/*.Aligned.sortedByCoord.out.bam
+
+echo "--------------------------------------"
+echo "featureCounts 运行完成。"
+
+# 3. 结果格式整理 (生成干净的表达矩阵)
+# 原始输出包含 Chr, Start, End 等信息，我们只需要 GeneID, GeneName 和 计数信息
+# 并且把表头的长文件名简化为样本名
+
+CLEAN_MATRIX="${QUANT_DIR}/gene_counts_matrix.txt"
+
+echo "正在整理表达矩阵: ${CLEAN_MATRIX}"
+
+# 步骤说明：
+# 1. 跳过第一行注释 (grep -v "^#")
+# 2. 提取第1列(EnsemblID), 第7列(GeneName), 和第8列及之后的所有列(样本计数)
+# 3. 使用 sed 替换表头中的路径后缀，只保留样本名 (例如 L1EGK2301878--T_1)
+
+cat "${OUTPUT_FILE}" \
+    | grep -v "^#" \
+    | cut -f1,7,8- \
+    | sed 's|/disk192/users_dir/buyu/1.布宇/supplement/41/alignment/||g' \
+    | sed 's|.Aligned.sortedByCoord.out.bam||g' \
+    > "${CLEAN_MATRIX}"
+
+echo "========== 所有分析完成 =========="
+echo "1. 原始计数文件 (含详细位置信息): ${OUTPUT_FILE}"
+echo "2. 最终表达矩阵 (EnsemblID + Symbol): ${CLEAN_MATRIX}"
