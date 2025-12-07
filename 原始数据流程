@@ -202,3 +202,11 @@ cat "${OUTPUT_FILE}" \
 echo "========== 所有分析完成 =========="
 echo "1. 原始计数文件 (含详细位置信息): ${OUTPUT_FILE}"
 echo "2. 最终表达矩阵 (EnsemblID + Symbol): ${CLEAN_MATRIX}"
+
+
+
+ROSE_HOME="/disk192/users_dir/buyu/1.布宇/supplement/ROSE/software/ROSE"
+GFF_DIR="/disk192/users_dir/buyu/1.布宇/supplement/ROSE/gff"
+BAM_DIR="/disk192/users_dir/buyu/1.布宇/supplement/ROSE/bam"
+OUT_ROOT="/disk192/users_dir/buyu/1.布宇/supplement/ROSE/results"
+ANNOT_FILE="/disk192/users_dir/buyu/1.布宇/supplement/ROSE/software/ROSE/annotation/GALLUS_refseq.ucsc"
