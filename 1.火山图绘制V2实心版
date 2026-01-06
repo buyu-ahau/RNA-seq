@@ -1,0 +1,90 @@
+# ==============================================================================
+# 紧凑型深色渐变火山图 - 优化底部空间与右侧图例
+# ==============================================================================
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(ggnewscale)
+
+# 读取数据
+input_path <- "G:/XY/一二大王/代谢组/MSMS二级分析/DB_EDLvsDD_EDL/1-差异分析/差异代谢物分析全列表.xlsx"
+df <- read_excel(input_path)
+
+# 1. 数据预处理
+df <- df %>%
+  mutate(change = case_when(
+    P.value < 0.05 & log2FC > 1 & VIP > 1 ~ "UP",
+    P.value < 0.05 & log2FC < -1 & VIP > 1 ~ "DOWN",
+    TRUE ~ "NOT"
+  ),
+  nLogP = -log10(P.value))
+
+# 统计数量
+up_count <- sum(df$change == "UP")
+down_count <- sum(df$change == "DOWN")
+
+# 计算绘图范围 (1.1倍原则) [cite: 2025-12-04]
+max_abs_logFC <- max(abs(df$log2FC), na.rm = TRUE) * 1.1
+# 为了让底部虚线显得更靠下，我们可以适度增加 Y 轴上限
+max_nLogP <- max(df$nLogP, na.rm = TRUE) * 1.15 
+
+# 筛选 Top 10 ID
+top_labels <- df %>% filter(change != "NOT") %>% arrange(P.value) %>% head(10)
+
+# 2. 绘图
+p <- ggplot(df, aes(x = log2FC, y = nLogP)) +
+  # [图层1] 不显著点 (灰色实心)
+  geom_point(data = filter(df, change == "NOT"), 
+             color = "grey85", alpha = 0.4, size = 1.5, shape = 16) +
+  
+  # [图层2] 下调点 (深绿色渐变)
+  new_scale_fill() +
+  geom_point(data = filter(df, change == "DOWN"), 
+             aes(fill = log2FC), color = "black", size = 2.5, shape = 21, stroke = 0.2) +
+  scale_fill_gradient(low = "#3d6605", high = "#a5c985", name = "Down\nlog2FC") +
+  
+  # [图层3] 上调点 (深橙红渐变)
+  new_scale_fill() +
+  geom_point(data = filter(df, change == "UP"), 
+             aes(fill = log2FC), color = "black", size = 2.5, shape = 21, stroke = 0.2) +
+  scale_fill_gradient(low = "#ff9c73", high = "#bd3e00", name = "Up\nlog2FC") +
+  
+  # [辅助线]
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "grey40", size = 0.4) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40", size = 0.4) +
+  
+  # [图层4] ID 标签 (更加紧凑的排布)
+  geom_text_repel(data = top_labels, aes(label = ID), 
+                  size = 3.2, fontface = "bold", 
+                  box.padding = 0.3, point.padding = 0.2,
+                  segment.color = "grey30", segment.size = 0.3) +
+  
+  # [图层5] 顶部计数文字 (位置微调)
+  annotate("text", x = -max_abs_logFC * 0.8, y = max_nLogP * 0.95, 
+           label = paste(down_count, "enriched"), color = "#3d6605", size = 4.5, fontface = "bold") +
+  annotate("text", x = max_abs_logFC * 0.8, y = max_nLogP * 0.95, 
+           label = paste(up_count, "enriched"), color = "#bd3e00", size = 4.5, fontface = "bold") +
+  annotate("text", x = max_abs_logFC * 0.95, y = -log10(0.05) + 0.15, 
+           label = "P = 0.05", size = 3, color = "grey40", hjust = 1) +
+
+  # [关键控制] 坐标轴与紧凑布局
+  scale_x_continuous(limits = c(-max_abs_logFC, max_abs_logFC), expand = c(0, 0)) +
+  # mult = c(0, 0.05) 确保底部直接从 0 开始，无任何空隙
+  scale_y_continuous(limits = c(0, max_nLogP), expand = expansion(mult = c(0, 0.05))) + 
+  
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    aspect.ratio = 0.65,           # 核心：通过设置较小的纵横比使图表“变扁”，视觉上压缩底部
+    legend.position = "right",     # 保留右侧标签图例
+    legend.title = element_text(size = 9, face = "bold"),
+    axis.title = element_text(size = 11, face = "bold"),
+    axis.text = element_text(size = 10, color = "black"),
+    plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm")
+  ) +
+  labs(x = "log2(Fold Change)", y = "-log10(P-value)")
+
+# [保存] 通过调整 height 参数进一步增强紧凑感
+ggsave("G:/XY/一二大王/代谢组/Analysis_Results_2026/01_Volcano/Volcano_Compact_V2.pdf", 
+       p, width = 7.5, height = 4.8) # 较小的高度配合 aspect.ratio 会非常紧凑
