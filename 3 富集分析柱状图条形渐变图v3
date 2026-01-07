@@ -1,0 +1,93 @@
+# ==============================================================================
+# 全组 GO 富集分析 - 垂直方格（Heatmap Strip）黑灰渐变版
+# ==============================================================================
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+
+# 1. 路径定义
+raw_data_root <- "G:/XY/一二大王/代谢组/MSMS二级分析"
+base_res_path <- "G:/XY/一二大王/代谢组/result"
+comparison_groups <- c("DB_EDLvsDB_SOL", "DB_EDLvsDD_EDL", "DB_SOLvsDD_SOL", "DD_EDLvsDD_SOL")
+
+# 2. 循环处理每一组
+for (group in comparison_groups) {
+  
+  # A. 确保文件夹存在
+  out_dir <- file.path(base_res_path, group, "05_GO_KEGG")
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  
+  # B. 读取数据：优先读取“差异代谢物分析全列表.xlsx”以获取更全的 GO 信息
+  # 如果没有该文件，则降级读取“差异代谢物结果列表.xlsx”
+  input_file <- file.path(raw_data_root, group, "1-差异分析", "差异代谢物分析全列表.xlsx")
+  if (!file.exists(input_file)) {
+    input_file <- file.path(raw_data_root, group, "1-差异分析", "差异代谢物结果列表.xlsx")
+  }
+  if (!file.exists(input_file)) next
+  
+  df_raw <- read_excel(input_file)
+  
+  # C. 寻找 GO 相关的列 (通常名为 GO, GO_Description 或 GO_Pathway)
+  # 如果没有显式的 GO 列，代谢组常使用 Class/Super Class 进行本体富集
+  go_col <- grep("GO|Ontology", colnames(df_raw), value = TRUE, ignore.case = TRUE)
+  if (length(go_col) == 0) {
+    # 如果找不到 GO 列，我们使用 Class 进行化学本体分析 (这也是一种广义的 GO)
+    go_col <- "class" 
+    message(group, " 未发现明确 GO 列，自动使用 'class' 列进行分析。")
+  } else {
+    go_col <- go_col[1]
+  }
+
+  # D. 显著性筛选与通路汇总
+  df_go <- df_raw %>%
+    filter(P.value < 0.05 & VIP > 1) %>% # 执行显著性筛选
+    filter(!is.na(!!sym(go_col))) %>%
+    # 处理一个代谢物对应多个 GO 条目的情况
+    separate_rows(!!sym(go_col), sep = "; ") %>%
+    mutate(nLogP = -log10(P.value)) %>%
+    group_by(Term = !!sym(go_col)) %>%
+    summarise(
+      Count = n(),
+      Avg_nLogP = mean(nLogP, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(Count >= 2) %>% # 过滤低频条目
+    arrange(Avg_nLogP) %>%
+    mutate(Term = factor(Term, levels = Term),
+           x_pos = "GO Enrichment")
+
+  if (nrow(df_go) == 0) next
+  
+  # E. 绘图：垂直方格黑灰渐变
+  p <- ggplot(df_go, aes(x = x_pos, y = Term, fill = Avg_nLogP)) +
+    # 绘制正方形格子，白色细边框
+    geom_tile(color = "white", linewidth = 0.5) +
+    
+    # 配色：黑灰渐变
+    scale_fill_gradient(low = "#E0E0E0", high = "#000000", name = "Avg -log10(P)") +
+    
+    # 标签位置：右侧
+    scale_y_discrete(position = "right") +
+    
+    # 强制 1:1 比例
+    coord_fixed(ratio = 1) +
+    
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),           # 去除网格线
+      axis.title = element_blank(),
+      axis.text.x = element_blank(),
+      axis.text.y = element_text(color = "black", size = 9, hjust = 0),
+      legend.position = "left",
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 11)
+    ) +
+    labs(title = paste("GO Enrichment Profile:", group))
+
+  # F. 动态计算尺寸并保存
+  plot_height <- max(4, nrow(df_go) * 0.3)
+  
+  ggsave(file.path(out_dir, paste0(group, "_GO_Square_Strip.pdf")), p, width = 9, height = plot_height)
+  ggsave(file.path(out_dir, paste0(group, "_GO_Square_Strip.png")), p, width = 9, height = plot_height, dpi = 300)
+  
+  message("完成 GO 富集图绘制: ", group)
+}

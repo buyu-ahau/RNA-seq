@@ -1,0 +1,54 @@
+# =========================================================================
+# 6.1 数据清洗：删除冗余名称并重新排序
+# =========================================================================
+# 使用 gsub 匹配并删除 " - Mus musculus" 及其后的所有内容
+plot_data$Description <- gsub(" - Mus musculus.*", "", plot_data$Description)
+
+# 重新转换为因子，确保绘图顺序不会乱
+plot_data$Description <- factor(plot_data$Description, levels = rev(unique(plot_data$Description[order(plot_data$Count)])))
+
+# =========================================================================
+# 6.2 重新定义高亮标签颜色（基于简化后的名称）
+# =========================================================================
+# 重新生成颜色向量 (此处根据你的需求选择需要红色的通路)
+# 也可以手动指定，例如：highlight_pathways <- c("NF-kappa B signaling pathway", "Basal cell carcinoma")
+y_label_colors <- ifelse(levels(plot_data$Description) %in% highlight_pathways, "#a73336", "black")
+
+# =========================================================================
+# 6.3 绘图：精调柱子宽度与图例位置
+# =========================================================================
+p_refined <- ggplot(plot_data, aes(x = Description, y = Count, fill = Type)) +
+  # 减小 width 值 (0.5-0.6 较细)，增加紧凑感
+  geom_col(color = "black", linewidth = 0.2, width = 0.6) +
+  # 坐标轴翻转
+  coord_flip() +
+  # 配色方案保持一致
+  scale_fill_manual(values = my_colors) +
+  # 设置 X 轴（实际显示的 Count 轴）标签为绝对值
+  scale_y_continuous(labels = abs, expand = expansion(mult = c(0.1, 0.1))) +
+  # 标签设置
+  labs(x = NULL, y = "Gene Count", title = "KEGG Enrichment Analysis") +
+  # SOP 规范主题
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(linewidth = 0.8, color = "black"),
+    # Y 轴标签（通路名）设置
+    axis.text.y = element_text(color = rev(y_label_colors), size = 9), 
+    axis.text.x = element_text(color = "black"),
+    # 图例设置：移至外部右侧
+    legend.position = "right", 
+    legend.title = element_blank(),
+    legend.background = element_blank(),
+    # 调整绘图区域边距，增加紧凑感
+    plot.margin = unit(c(1, 1, 1, 1), "mm")
+  )
+
+# =========================================================================
+# 6.4 结果保存 (通过减小 PDF 高度来强制柱子更紧凑)
+# =========================================================================
+# 建议：如果通路较多，减小 height 参数会让柱子靠得更近
+ggsave(paste0(output_dir_kegg, "KEGG_Mirror_Refined.pdf"), p_refined, width = 8, height = 5.5)
+ggsave(paste0(output_dir_kegg, "KEGG_Mirror_Refined.png"), p_refined, width = 8, height = 5.5, dpi = 300)
+
+cat(">>> 精调版镜像图已保存！\n")
